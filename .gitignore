@@ -1,0 +1,61 @@
+# ─── Dépendances ─────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# ─── Build ───────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ─── Variables d'environnement (secrets) ─────────────────
+# On ignore tous les .env, sauf le modèle sans secrets
+.env
+.env.*
+!.env.example
+
+# ─── Logs ────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ─── Tests & couverture ──────────────────────────────────
+coverage/
+.nyc_output/
+
+# ─── Prisma ──────────────────────────────────────────────
+# (le dossier prisma/migrations/ doit rester versionné)
+prisma/*.db
+prisma/*.db-journal
+prisma/dev.db*
+
+# ─── Fichiers générés / temporaires ──────────────────────
+tmp/
+temp/
+.cache/
+.eslintcache
+.turbo/
+
+# ─── Clés et certificats ─────────────────────────────────
+*.pem
+*.key
+*.p12
+*.crt
+
+# ─── Éditeurs / IDE ──────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── Système d'exploitation ──────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini

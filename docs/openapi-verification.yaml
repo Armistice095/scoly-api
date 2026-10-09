@@ -1,0 +1,333 @@
+openapi: 3.0.3
+info:
+  title: Scoly — Vérification publique d'un document
+  version: 1.0.0
+  description: |
+    Page **publique** (sans authentification) qui permet de vérifier l'authenticité
+    d'un document émis via Scoly, par scan du QR code ou par saisie de la référence.
+
+    Documentation complète, parcours et recommandations UX : `docs/API_VERIFICATION.md`.
+
+    **À l'attention de l'équipe frontend** : en plus de `VALIDE`, `ANNULE` et
+    `INTROUVABLE`, la réponse peut être **`AMBIGU`** (saisie manuelle uniquement,
+    référence présente dans plusieurs établissements). Ce résultat n'est pas dans
+    la maquette : il demande un écran dédié. Voir `AMBIGU` ci-dessous.
+servers:
+  - url: http://localhost:3000
+    description: Développement
+tags:
+  - name: Vérification publique
+paths:
+  /verification:
+    post:
+      tags: [Vérification publique]
+      operationId: verifierDocument
+      summary: Vérifier un document (jeton QR ou référence)
+      description: |
+        Lecture seule malgré le verbe POST : la référence et le jeton restent dans
+        le corps, hors des logs d'accès, de l'historique et de l'en-tête Referer.
+
+        Fournir **soit** `token` (parcours QR), **soit** `reference` (saisie
+        manuelle) — jamais les deux. `etablissement` ne sert qu'avec `reference`,
+        pour lever un résultat `AMBIGU`.
+
+        Ne pas envoyer de cookie ni d'en-tête `Authorization`. Ne jamais mettre
+        la réponse en cache : elle porte `Cache-Control: no-store`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationRequest'
+            examples:
+              qr:
+                summary: Parcours QR code
+                value:
+                  token: AbCdEfGhIjKlMnOpQrStUvWxYz012345
+              saisie:
+                summary: Saisie manuelle
+                value:
+                  reference: N°0042/2025-2026/CEG-GODOMEY
+              saisieTolerante:
+                summary: Saisie manuelle approximative (acceptée)
+                value:
+                  reference: ' n° 42 / 2025-2026 / ceg godomey '
+              saisieApresAmbigu:
+                summary: Saisie manuelle après un résultat AMBIGU
+                value:
+                  reference: N°0042/2025-2026/CEG-GODOMEY
+                  etablissement: CEG Godomey
+      responses:
+        '200':
+          description: |
+            Résultat de la vérification. Les quatre résultats ont la même enveloppe ;
+            `INTROUVABLE` n'est pas une erreur.
+          headers:
+            Cache-Control:
+              description: Toujours `no-store`.
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResponse'
+              examples:
+                valide:
+                  summary: VALIDE
+                  value:
+                    resultat: VALIDE
+                    verifieLe: '2026-10-05T17:47:12.345Z'
+                    document:
+                      typeDocument: Certificat de scolarité
+                      reference: N°0042/2025-2026/CEG-GODOMEY
+                      eleve: Adjovi A.
+                      dateEmission: '2026-09-28'
+                      dateAnnulation: null
+                    etablissement:
+                      nom: CEG Godomey
+                      localite: Abomey-Calavi, Atlantique
+                      pays: République du Bénin
+                      telephone: +229 01 00 00 00 00
+                      email: secretariat@ceg-godomey.bj
+                annule:
+                  summary: ANNULE
+                  value:
+                    resultat: ANNULE
+                    verifieLe: '2026-10-05T17:48:01.002Z'
+                    document:
+                      typeDocument: Attestation de transfert
+                      reference: N°0012/2025-2026/CEG-GODOMEY
+                      eleve: Koffi D.
+                      dateEmission: '2026-09-26'
+                      dateAnnulation: '2026-09-30'
+                    etablissement:
+                      nom: CEG Godomey
+                      localite: Abomey-Calavi, Atlantique
+                      pays: République du Bénin
+                      telephone: +229 01 00 00 00 00
+                      email: secretariat@ceg-godomey.bj
+                introuvable:
+                  summary: INTROUVABLE
+                  value:
+                    resultat: INTROUVABLE
+                    verifieLe: '2026-10-05T17:48:03.120Z'
+                    document: null
+                    etablissement: null
+                ambigu:
+                  summary: AMBIGU — nouveau, absent de la maquette
+                  value:
+                    resultat: AMBIGU
+                    verifieLe: '2026-10-05T17:48:41.007Z'
+                    document: null
+                    etablissement: null
+        '400':
+          description: |
+            Requête invalide. `code` vaut `CHAMP_VIDE`, `FORMAT_INVALIDE` ou
+            `VALIDATION_ERROR`. Un corps JSON illisible renvoie aussi 400, sans `code`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erreur'
+              examples:
+                champVide:
+                  summary: CHAMP_VIDE
+                  value:
+                    statusCode: 400
+                    code: CHAMP_VIDE
+                    message: [Veuillez saisir la référence du document.]
+                    erreurs:
+                      - champ: reference
+                        message: Veuillez saisir la référence du document.
+                formatInvalide:
+                  summary: FORMAT_INVALIDE
+                  value:
+                    statusCode: 400
+                    code: FORMAT_INVALIDE
+                    message:
+                      - La référence saisie n’est pas valide. Recopiez-la telle qu’elle figure en haut du document.
+                    erreurs:
+                      - champ: reference
+                        message: La référence saisie n’est pas valide. Recopiez-la telle qu’elle figure en haut du document.
+        '429':
+          description: |
+            Trop de requêtes (limitation par IP, voir `x-limites-de-debit`).
+            Désactiver le bouton « Vérifier » pendant `retryAfterSecondes`.
+          headers:
+            Retry-After:
+              description: Secondes à attendre avant de réessayer.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErreurTropDeRequetes'
+        '500':
+          description: |
+            Erreur serveur. Ne pas afficher « Introuvable » : ce serait faux.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erreur'
+              example:
+                statusCode: 500
+                code: ERREUR_SERVEUR
+                message: Le service de vérification est momentanément indisponible. Veuillez réessayer dans quelques instants.
+      x-limites-de-debit:
+        saisie:
+          minute: 10
+          heure: 40
+        qr:
+          minute: 30
+          heure: 200
+        echecsSaisieAvantBlocage: 15
+        fenetreEchecsMinutes: 10
+components:
+  schemas:
+    VerificationRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Exactement l'un de `token` ou `reference`. Un champ vide (`""`) ou `null`
+        équivaut à « non fourni ».
+      properties:
+        token:
+          type: string
+          nullable: true
+          description: Jeton lu dans l'URL du QR code (dernier segment), tel quel.
+          example: AbCdEfGhIjKlMnOpQrStUvWxYz012345
+        reference:
+          type: string
+          nullable: true
+          maxLength: 120
+          description: |
+            Référence imprimée en haut du document. Saisie tolérante : casse,
+            accents, espaces, ponctuation, variantes du « N° » et zéros initiaux
+            sont ignorés. Doit contenir au moins un chiffre.
+          example: N°0042/2025-2026/CEG-GODOMEY
+        etablissement:
+          type: string
+          nullable: true
+          maxLength: 150
+          description: |
+            Nom, même partiel, de l'établissement émetteur. À fournir après un
+            résultat `AMBIGU`. Comparé sans accent ni casse. Ignoré avec `token`.
+          example: CEG Godomey
+    VerificationResponse:
+      type: object
+      required: [resultat, verifieLe, document, etablissement]
+      properties:
+        resultat:
+          type: string
+          enum: [VALIDE, ANNULE, INTROUVABLE, AMBIGU]
+          description: |
+            - `VALIDE` : le document existe et est actif.
+            - `ANNULE` : le document existe mais a été annulé.
+            - `INTROUVABLE` : aucune correspondance. Aucun contact d'école disponible.
+            - `AMBIGU` : **saisie manuelle uniquement** ; la référence existe dans
+              plusieurs établissements. Aucune donnée divulguée. Demander le nom de
+              l'établissement (champ `etablissement`) ou orienter vers le QR code.
+        verifieLe:
+          type: string
+          format: date-time
+          description: Heure du SERVEUR (UTC). À afficher en Africa/Porto-Novo.
+        document:
+          allOf:
+            - $ref: '#/components/schemas/DocumentPublic'
+          nullable: true
+          description: Renseigné pour `VALIDE` et `ANNULE`, sinon `null`.
+        etablissement:
+          allOf:
+            - $ref: '#/components/schemas/EtablissementPublic'
+          nullable: true
+          description: Renseigné pour `VALIDE` et `ANNULE`, sinon `null`.
+    DocumentPublic:
+      type: object
+      required: [typeDocument, reference, eleve, dateEmission, dateAnnulation]
+      properties:
+        typeDocument:
+          type: string
+          example: Certificat de scolarité
+        reference:
+          type: string
+          description: Telle qu'imprimée sur le document.
+          example: N°0042/2025-2026/CEG-GODOMEY
+        eleve:
+          type: string
+          description: Masqué — premier prénom et initiale du nom.
+          example: Adjovi A.
+        dateEmission:
+          type: string
+          format: date
+          example: '2026-09-28'
+        dateAnnulation:
+          type: string
+          format: date
+          nullable: true
+          description: Jour civil (Africa/Porto-Novo). Renseigné uniquement pour `ANNULE`.
+          example: '2026-09-30'
+    EtablissementPublic:
+      type: object
+      required: [nom, localite, pays, telephone, email]
+      properties:
+        nom:
+          type: string
+          description: Nom tel qu'imprimé sur le document.
+          example: CEG Godomey
+        localite:
+          type: string
+          description: Commune, département.
+          example: Abomey-Calavi, Atlantique
+        pays:
+          type: string
+          example: République du Bénin
+        telephone:
+          type: string
+          nullable: true
+          description: Coordonnée actuelle de l'établissement.
+          example: +229 01 00 00 00 00
+        email:
+          type: string
+          nullable: true
+          description: Coordonnée actuelle de l'établissement.
+          example: secretariat@ceg-godomey.bj
+    Erreur:
+      type: object
+      required: [statusCode, message]
+      properties:
+        statusCode:
+          type: integer
+        code:
+          type: string
+          enum: [CHAMP_VIDE, FORMAT_INVALIDE, VALIDATION_ERROR, TROP_DE_REQUETES, ERREUR_SERVEUR]
+          description: Absent uniquement pour un corps JSON illisible.
+        message:
+          description: Phrases lisibles par l'utilisateur (tableau pour les erreurs 400, texte sinon).
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        erreurs:
+          type: array
+          description: Présent pour les erreurs 400 de champ.
+          items:
+            type: object
+            required: [champ, message]
+            properties:
+              champ:
+                type: string
+                example: reference
+              message:
+                type: string
+    ErreurTropDeRequetes:
+      allOf:
+        - $ref: '#/components/schemas/Erreur'
+        - type: object
+          required: [retryAfterSecondes]
+          properties:
+            retryAfterSecondes:
+              type: integer
+              minimum: 1
+              example: 42

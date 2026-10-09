@@ -1,0 +1,468 @@
+// Schéma Prisma — Scoly
+// Base de données PostgreSQL hébergée sur Supabase.
+// Voir docs/ARCHITECTURE.md pour le contexte et les choix de modélisation.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// DIRECTEUR = celui/celle qui a inscrit l'établissement, seul rôle habilité
+// à modifier les paramètres établissement et à inviter/désactiver des
+// utilisateurs. MEMBRE = toute personne invitée : mêmes droits que les
+// autres membres pour l'instant (génération de documents), pas d'accès aux
+// paramètres. Le poste réel de la personne (secrétaire, censeur...) est du
+// texte libre dans Utilisateur.fonction — role ne sert qu'à la permission.
+enum RoleUtilisateur {
+  DIRECTEUR
+  MEMBRE
+}
+
+// Un seul statut au MVP : tous les élèves sont ACTIF (décision produit). On
+// garde l'enum (et la colonne) plutôt que de les supprimer pour pouvoir
+// ajouter plus tard TRANSFERE/PARTI sans toucher au reste du code.
+enum StatutEleve {
+  ACTIF
+}
+
+enum Sexe {
+  MASCULIN
+  FEMININ
+}
+
+enum StatutDocument {
+  ACTIF
+  ANNULE
+}
+
+// Vérification publique d'un document (page sans authentification).
+// QR = code QR scanné (jeton opaque) ; SAISIE = référence tapée à la main.
+enum CanalVerification {
+  QR
+  SAISIE
+}
+
+// Résultat renvoyé au vérificateur. AMBIGU = la référence saisie existe dans
+// plusieurs établissements : aucune donnée n'est divulguée, on demande de
+// scanner le QR ou de préciser l'établissement.
+enum ResultatVerification {
+  VALIDE
+  ANNULE
+  INTROUVABLE
+  AMBIGU
+}
+
+// Valeurs à confirmer avec le produit/le front si la liste doit être plus
+// fine (ex. distinguer secondaire général / technique) — posé volontairement
+// simple pour matcher le menu "Ordre d'enseignement" du formulaire d'inscription.
+enum OrdreEnseignement {
+  MATERNELLE
+  PRIMAIRE
+  SECONDAIRE
+}
+
+model Etablissement {
+  id                      String            @id @default(uuid())
+  nom                     String
+  ordreEnseignement       OrdreEnseignement @map("ordre_enseignement")
+  // Département/commune en String (pas un enum figé sur les 12 départements
+  // du Bénin) pour ne pas verrouiller le modèle à un seul pays si Scoly
+  // s'étend ailleurs — la liste proposée dans le menu déroulant reste un
+  // détail du front.
+  departement             String
+  commune                 String
+  adresse                 String?
+  numeroAgrement          String?           @map("numero_agrement")
+  telephone               String?
+  email                   String?
+  // Chemin de l'objet dans le bucket Supabase Storage (privé), PAS une URL
+  // publique/signée : une URL signée expire et ne doit jamais être stockée
+  // telle quelle. Le back régénère une URL signée à la demande à partir de
+  // ce chemin (voir StorageService.obtenirUrlSignee).
+  logoChemin              String?           @map("logo_chemin")
+  directionDepartementale String?           @map("direction_departementale")
+  ministereTutelle        String?           @map("ministere_tutelle")
+  devise                  String?
+  nomSignataire           String?           @map("nom_signataire")
+  fonctionSignataire      String?           @map("fonction_signataire")
+  signatureChemin         String?           @map("signature_chemin")
+  cachetChemin            String?           @map("cachet_chemin")
+
+  // Numérotation des documents. {N} = prochainNumero, {ANNEE} = l'année
+  // scolaire active. prochainNumero est incrémenté par DocumentModule au
+  // moment de la génération (à faire de façon atomique là-bas).
+  formatReference String? @map("format_reference")
+  prochainNumero  Int     @default(1) @map("prochain_numero")
+  lieuParDefaut   String? @map("lieu_par_defaut")
+
+  // Une seule année active à la fois, mais tout l'historique est conservé
+  // dans anneesScolaires (écran "années scolaires passées" à venir).
+  anneeScolaireActiveId String?         @unique @map("annee_scolaire_active_id")
+  anneeScolaireActive   AnneeScolaire?  @relation("AnneeActive", fields: [anneeScolaireActiveId], references: [id])
+  anneesScolaires       AnneeScolaire[] @relation("AnneesEtablissement")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  utilisateurs Utilisateur[]
+  eleves       Eleve[]
+  documents    Document[]
+  notifications Notification[]
+
+  @@map("etablissements")
+}
+
+// Historique complet des années scolaires de l'établissement. La ligne
+// "active" est référencée depuis Etablissement.anneeScolaireActiveId — on ne
+// la déduit pas par une date courante, pour que le changement d'année reste
+// une action explicite de l'admin (cf. écran Paramètres > Année scolaire).
+model AnneeScolaire {
+  id              String        @id @default(uuid())
+  etablissementId String        @map("etablissement_id")
+  etablissement   Etablissement @relation("AnneesEtablissement", fields: [etablissementId], references: [id], onDelete: Cascade)
+
+  libelle     String // ex. "2025-2026"
+  dateRentree DateTime @map("date_rentree")
+  dateFin     DateTime @map("date_fin")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relation inverse d'Etablissement.anneeScolaireActive (1:1 optionnelle).
+  etablissementActif Etablissement? @relation("AnneeActive")
+
+  @@index([etablissementId])
+  @@map("annees_scolaires")
+}
+
+model Utilisateur {
+  id              String        @id @default(uuid())
+  etablissementId String        @map("etablissement_id")
+  etablissement   Etablissement @relation(fields: [etablissementId], references: [id], onDelete: Cascade)
+  // Nullable : un utilisateur invité n'a ni nom ni téléphone tant qu'il n'a
+  // pas accepté son invitation (seuls email + fonction sont connus à
+  // l'invitation, cf. EquipeService.inviter).
+  nomComplet      String?       @map("nom_complet")
+  fonction        String
+  email           String        @unique
+  telephone       String?
+  // Null tant que le compte n'a pas de mot de passe défini : cas d'un
+  // utilisateur invité qui n'a pas encore cliqué sur son lien d'activation.
+  motDePasseHash  String?       @map("mot_de_passe_hash")
+  // Default MEMBRE (moindre privilège) : le rôle DIRECTEUR n'est jamais
+  // implicite, il est posé explicitement par AuthService.inscrire() pour la
+  // personne qui crée le compte de l'établissement.
+  role            RoleUtilisateur @default(MEMBRE)
+  // Null tant que le compte n'a pas été activé (code d'activation ou
+  // acceptation d'invitation). Un compte non activé ne peut pas se connecter.
+  emailVerifieLe  DateTime?       @map("email_verifie_le")
+  // Désactivation par le Directeur (différent de emailVerifieLe : un compte
+  // peut être pleinement activé puis désactivé plus tard). Un compte
+  // désactivé ne peut plus se connecter, cf. AuthService.connecter.
+  actif           Boolean         @default(true)
+
+  notifDocumentGenere      Boolean @default(true) @map("notif_document_genere")
+  notifInvitationAcceptee  Boolean @default(true) @map("notif_invitation_acceptee")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  documentsAnnules  Annulation[]
+  documentsEtablis  Document[]               @relation("DocumentEtabliPar")
+  telechargements   TelechargementDocument[]
+  codesVerification CodeVerification[]
+  notifications     Notification[]
+
+  @@index([etablissementId])
+  @@map("utilisateurs")
+}
+
+enum TypeCodeVerification {
+  ACTIVATION_COMPTE
+  RESET_MOT_DE_PASSE
+  // Jeton d'invitation envoyé à un membre invité par le Directeur (lien, pas
+  // un code à 6 chiffres saisi à la main — cf. module Équipe à venir).
+  INVITATION_EQUIPE
+}
+
+// Historique complet des codes envoyés (activation + mot de passe oublié).
+// On ne supprime jamais une ligne ici : cohérent avec le principe
+// d'auditabilité du projet (cf. ARCHITECTURE.md). L'expiration/consommation
+// d'un code se lit via expireLe / utiliseLe, pas via une suppression.
+model CodeVerification {
+  id            String               @id @default(uuid())
+  utilisateurId String               @map("utilisateur_id")
+  utilisateur   Utilisateur          @relation(fields: [utilisateurId], references: [id], onDelete: Cascade)
+  type          TypeCodeVerification
+
+  // Le code à 6 chiffres n'est jamais stocké en clair, seulement son hash
+  // (bcrypt, comme le mot de passe) : une fuite de la base ne doit pas
+  // permettre de rejouer un code encore valide.
+  codeHash String @map("code_hash")
+
+  expireLe   DateTime  @map("expire_le")
+  tentatives Int       @default(0) @map("tentatives")
+  utiliseLe  DateTime? @map("utilise_le")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([utilisateurId, type])
+  @@map("codes_verification")
+}
+
+model Eleve {
+  id              String        @id @default(uuid())
+  etablissementId String        @map("etablissement_id")
+  etablissement   Etablissement @relation(fields: [etablissementId], references: [id], onDelete: Cascade)
+
+  // Les deux matricules sont saisis à la main par l'utilisateur (texte libre,
+  // facultatifs). Unicité par établissement uniquement quand ils sont
+  // renseignés : PostgreSQL autorise plusieurs NULL dans une contrainte unique.
+  matricule           String?
+  matriculeEducMaster String? @map("matricule_educ_master")
+
+  nom             String
+  prenoms         String
+  sexe            Sexe
+  // @db.Date : une date de naissance n'a pas d'heure, donc pas de décalage
+  // de fuseau horaire possible.
+  dateNaissance   DateTime      @map("date_naissance") @db.Date
+  lieuNaissance   String        @map("lieu_naissance")
+
+  parentTuteur String  @map("parent_tuteur")
+  telephone    String // normalisé en +229XXXXXXXXXX (cf. eleves/utils/telephone.ts)
+  adresse      String?
+
+  // Texte de recherche sans accents ni majuscules (nom + prénoms + matricules),
+  // pour que « nadege » trouve « Nadège ». Dérivé : toujours calculé par
+  // construireTexteRecherche() (eleves/utils/recherche.ts) à chaque écriture,
+  // jamais exposé par l'API, jamais saisi à la main.
+  rechercheNormalisee String @default("") @map("recherche_normalisee")
+
+  // Facultatifs à la création (vides par défaut). Renseignés à la première
+  // génération d'un document qui en a besoin (certificat de scolarité…), puis
+  // mémorisés ici : l'utilisateur ne les ressaisit plus (cf. DocumentsService).
+  classe          String?
+  dateInscription DateTime?     @map("date_inscription") @db.Date
+
+  statut          StatutEleve   @default(ACTIF)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  documents Document[]
+
+  @@unique([etablissementId, matricule])
+  @@unique([etablissementId, matriculeEducMaster])
+  @@index([etablissementId, nom, prenoms])
+  @@map("eleves")
+}
+
+// Catégories d'affichage de l'écran « Documents » (filtres en pastilles).
+enum CategorieDocument {
+  SCOLARITE
+  TRANSFERTS_DEPARTS
+}
+
+// Métadonnées d'un type de document. Les CHAMPS à saisir et le MODÈLE PDF de
+// chaque type vivent dans le code (src/documents/types/…), versionnés avec
+// le dépôt : pas de template éditable en base (pas de risque d'injection,
+// relecture en revue de code, tests). Un type `actif = false` est affiché
+// « Bientôt disponible » et ne peut pas être généré.
+model TypeDocument {
+  id          String            @id @default(uuid())
+  code        String            @unique // ex. "CERTIFICAT_SCOLARITE"
+  nom         String // ex. "Certificat de scolarité"
+  description String?
+  categorie   CategorieDocument
+  ordre       Int               @default(0)
+  actif       Boolean           @default(false)
+
+  documents Document[]
+
+  @@map("types_documents")
+}
+
+model Document {
+  id              String         @id @default(uuid())
+  etablissementId String         @map("etablissement_id")
+  etablissement   Etablissement  @relation(fields: [etablissementId], references: [id], onDelete: Cascade)
+
+  eleveId String @map("eleve_id")
+  eleve   Eleve  @relation(fields: [eleveId], references: [id], onDelete: Restrict)
+
+  typeDocumentId String       @map("type_document_id")
+  typeDocument   TypeDocument @relation(fields: [typeDocumentId], references: [id], onDelete: Restrict)
+
+  // Qui a établi le document (affiché « Établi par … » dans les archives).
+  // Restrict : un utilisateur n'est jamais supprimé (il est désactivé), donc
+  // la trace de l'auteur ne peut pas disparaître.
+  etabliParId String      @map("etabli_par_id")
+  etabliPar   Utilisateur @relation("DocumentEtabliPar", fields: [etabliParId], references: [id], onDelete: Restrict)
+
+  // Numéro de référence imprimé sur le document : rendu du `formatReference`
+  // des paramètres (ex. « N°12/2025-2026/CEG-GODOMEY »). Unique PAR
+  // établissement (deux écoles peuvent avoir le même format).
+  numeroUnique String @map("numero_unique")
+  // Le « 12 » seul, tel que compté par Etablissement.prochainNumero. Sert à
+  // calculer le plus petit prochain numéro autorisé (cf. plancher-numero.ts).
+  // Null uniquement pour les documents créés avant l'existence de ce champ.
+  numeroOrdre Int? @map("numero_ordre")
+  // Clé de recherche de la page publique de vérification : `numeroUnique`
+  // normalisé par normaliserReference() (sans « N° », casse, ponctuation ni
+  // zéros initiaux). NON unique : deux établissements peuvent avoir la même
+  // référence (cf. résultat AMBIGU). Calculée UNE fois à l'émission ; NULL
+  // uniquement avant l'exécution de prisma/backfill-reference-normalisee.ts.
+  // Jamais exposée par l'API.
+  referenceNormalisee String? @map("reference_normalisee")
+  champsSaisis Json   @map("champs_saisis") // Champs variables propres au type de document
+  // Photographie, au moment de l'émission, de ce qui est imprimé (identité de
+  // l'élève, en-tête de l'établissement, année scolaire). Les archives et la
+  // page de vérification publique lisent ceci, pas la fiche élève actuelle :
+  // corriger un nom plus tard ne doit pas contredire le PDF déjà émis.
+  donneesFigees Json   @map("donnees_figees")
+  // Date imprimée « Fait à …, le … » (fuseau Africa/Porto-Novo, pas UTC).
+  dateEmission DateTime @map("date_emission") @db.Date
+  // Fournie par le front (en-tête Idempotency-Key) pour qu'un double-clic ne
+  // crée pas deux documents (et ne consomme pas deux numéros).
+  cleIdempotence String? @map("cle_idempotence")
+
+  statut     StatutDocument @default(ACTIF)
+  urlPdf     String?        @map("url_pdf") // Référence à l'objet dans Supabase Storage
+  qrCodeToken String        @unique @map("qr_code_token")
+
+  // Traçabilité en cas de correction (annulation + régénération)
+  remplaceDocumentId String?    @unique @map("remplace_document_id")
+  remplaceDocument   Document?  @relation("Remplacement", fields: [remplaceDocumentId], references: [id])
+  remplacePar        Document?  @relation("Remplacement")
+
+  // Texte de recherche des archives (référence + identité figée de l'élève),
+  // sans accents ni majuscules. Dérivé : calculé UNE fois à l'émission par
+  // construireTexteRechercheDocument() — le document est figé, il ne change
+  // plus. Jamais exposé par l'API.
+  rechercheNormalisee String @default("") @map("recherche_normalisee")
+
+  annulation      Annulation?
+  telechargements TelechargementDocument[]
+  verifications   JournalVerification[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([etablissementId, numeroUnique])
+  @@unique([etablissementId, cleIdempotence])
+  // Écran Archives : liste d'un établissement, la plus récente d'abord (le
+  // tri inverse lit le même index à rebours), avec ou sans filtre.
+  @@index([etablissementId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([etablissementId, statut, createdAt(sort: Desc)])
+  @@index([etablissementId, typeDocumentId, createdAt(sort: Desc)])
+  @@index([eleveId])
+  // Page publique de vérification : recherche par référence seule (sans
+  // l'établissement), que l'index unique ci-dessus ne peut pas servir.
+  @@index([referenceNormalisee])
+  @@map("documents")
+}
+
+// Une annulation est définitive et jamais supprimée (Restrict + trigger SQL,
+// cf. migration archives_immuabilite). Un seul enregistrement par document.
+model Annulation {
+  id         String      @id @default(uuid())
+  documentId String      @unique @map("document_id")
+  document   Document    @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  motif      String      @db.Text
+  annuleParId String     @map("annule_par_id")
+  annulePar  Utilisateur @relation(fields: [annuleParId], references: [id])
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@map("annulations")
+}
+
+// Journal des téléchargements d'un document archivé (« Téléchargé par X, le … »).
+// Ajout seul : une ligne par lien de téléchargement délivré, jamais modifiée ni
+// supprimée (triggers SQL, cf. migration archives_immuabilite).
+model TelechargementDocument {
+  id            String      @id @default(uuid())
+  documentId    String      @map("document_id")
+  document      Document    @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  utilisateurId String      @map("utilisateur_id")
+  utilisateur   Utilisateur @relation(fields: [utilisateurId], references: [id], onDelete: Restrict)
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@index([documentId, createdAt(sort: Desc)])
+  @@map("telechargements_documents")
+}
+
+// Journal des vérifications publiques : détecter les abus (énumération,
+// scraping) SANS conserver de donnée personnelle inutile. Aucune IP en clair :
+// `ipHash` = HMAC(IP, secret + jour UTC), donc non réversible et non
+// corrélable d'un jour à l'autre. Ni référence saisie, ni jeton, ni nom.
+// Conservé 90 jours puis purgé (cf. JournalVerificationService).
+model JournalVerification {
+  id        String   @id @default(uuid())
+  // Heure du SERVEUR (défaut base de données), jamais celle du navigateur.
+  createdAt DateTime @default(now()) @map("created_at")
+
+  canal    CanalVerification
+  resultat ResultatVerification
+  ipHash   String               @map("ip_hash")
+
+  // Document trouvé (VALIDE / ANNULE), sinon NULL. SetNull : la purge
+  // explicite d'un document (cf. migration archives_immuabilite) ne doit pas
+  // être bloquée par son journal de vérifications.
+  documentId String?   @map("document_id")
+  document   Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  // Compte des échecs récents d'une IP (ralentissement progressif) ; purge.
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
+  @@index([documentId])
+  @@map("journal_verifications")
+}
+
+// Notifications de la cloche et du « Centre de notifications ».
+// Catégorie = regroupement d'affichage (filtre « Tous les types »).
+enum CategorieNotification {
+  DOCUMENTS
+  EQUIPE
+}
+
+// Évènement à l'origine de la notification. Le titre et le message sont figés
+// à la création (texte final, en français) : renommer un élève plus tard ne
+// réécrit pas l'historique, comme pour les documents.
+enum TypeNotification {
+  DOCUMENT_ETABLI
+  DOCUMENT_ANNULE
+  INVITATION_ACCEPTEE
+}
+
+// Une ligne PAR destinataire : « lue » est personnelle (le Directeur qui lit
+// ne la marque pas lue pour la secrétaire). Aucune route de création : elles
+// sont produites par le serveur (cf. NotificationsService).
+model Notification {
+  id              String        @id @default(uuid())
+  etablissementId String        @map("etablissement_id")
+  etablissement   Etablissement @relation(fields: [etablissementId], references: [id], onDelete: Cascade)
+  // Destinataire.
+  utilisateurId   String        @map("utilisateur_id")
+  utilisateur     Utilisateur   @relation(fields: [utilisateurId], references: [id], onDelete: Cascade)
+
+  type      TypeNotification
+  categorie CategorieNotification
+  titre     String
+  message   String
+
+  // Cible éventuelle (pour que le clic ouvre la bonne fiche). Volontairement
+  // SANS clé étrangère : la notification ne doit ni bloquer ni dépendre de la
+  // vie de l'objet visé.
+  documentId String? @map("document_id")
+  membreId   String? @map("membre_id")
+
+  // NULL = non lue. Posé par le serveur, jamais par le client.
+  lueLe     DateTime? @map("lue_le")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // Liste (plus récentes d'abord) avec ou sans filtre « non lues » / type.
+  @@index([utilisateurId, createdAt(sort: Desc), id(sort: Desc)])
+  // Compteur du badge : ne parcourt que les non lues de l'utilisateur.
+  @@index([utilisateurId, lueLe])
+  @@map("notifications")
+}
