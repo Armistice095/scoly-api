@@ -164,7 +164,7 @@ const estVide = (valeur: string | null | undefined) => !valeur?.trim();
 export function recalerEntete(
   actuel: EtatEtablissement,
   modification: ModificationEtablissement,
-): Partial<Pick<EnteteOfficielle, ChampEntete>> {
+): Partial<Record<ChampEntete, string>> {
   const ordre = modification.ordreEnseignement ?? actuel.ordreEnseignement;
   const departement = modification.departement ?? actuel.departement;
   if (
