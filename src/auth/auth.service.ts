@@ -18,6 +18,7 @@ import type { ReinitialiserMotDePasseDto } from './dto/reinitialiser-mot-de-pass
 import type { MettreAJourProfilDto } from './dto/mettre-a-jour-profil.dto.js';
 import type { ChangerMotDePasseDto } from './dto/changer-mot-de-passe.dto.js';
 import type { MettreAJourNotificationsDto } from './dto/mettre-a-jour-notifications.dto.js';
+import { enteteParDefaut } from '../etablissement/entete-officielle.js';
 import type {
   JwtPayloadAcces,
   JwtPayloadReset,
@@ -116,6 +117,9 @@ export class AuthService {
             ordreEnseignement: dto.ordreEnseignement,
             departement: dto.departement,
             commune: dto.commune,
+            // En-tête officiel pré-rempli dès l'inscription (modifiable ensuite
+            // dans les Paramètres).
+            ...enteteParDefaut(dto.ordreEnseignement, dto.departement),
           },
         });
 

@@ -15,6 +15,7 @@ import {
 } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
+import { enteteParDefaut } from '../src/etablissement/entete-officielle.js';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -22,7 +23,8 @@ const prisma = new PrismaClient({ adapter });
 async function main() {
   const etablissement = await prisma.etablissement.upsert({
     where: { id: '00000000-0000-0000-0000-000000000001' },
-    update: {},
+    // Rafraîchit l'en-tête de l'établissement de test à chaque seed.
+    update: enteteParDefaut(OrdreEnseignement.SECONDAIRE, 'Atlantique'),
     create: {
       id: '00000000-0000-0000-0000-000000000001',
       nom: 'CEG Godomey (établissement de test)',
@@ -33,10 +35,7 @@ async function main() {
       numeroAgrement: 'AGR-0142',
       telephone: '+22901970000',
       email: 'ceg.godomey@exemple.bj',
-      directionDepartementale: "Direction départementale de l'Atlantique",
-      ministereTutelle:
-        'Ministère des Enseignements Secondaire, Technique et de la Formation Professionnelle',
-      devise: 'Fraternité – Justice – Travail',
+      ...enteteParDefaut(OrdreEnseignement.SECONDAIRE, 'Atlantique'),
       nomSignataire: 'Hervé Agbodjan',
       fonctionSignataire: 'Directeur',
       formatReference: 'N°{N}/{ANNEE}/CEG-GODOMEY',

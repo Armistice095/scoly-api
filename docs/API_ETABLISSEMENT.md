@@ -141,6 +141,38 @@ Accessible à tout membre. **Réponse 200** : tableau, plus récente en premier.
 
 ---
 
+## 5. En-tête officiel automatique
+
+`ministereTutelle`, `directionDepartementale` et `devise` sont **calculés par l'API** à partir de l'ordre d'enseignement et du département (source unique : `src/etablissement/entete-officielle.ts`). Ils restent des champs enregistrés et modifiables.
+
+| Ordre d'enseignement | Ministère de tutelle |
+|---|---|
+| `MATERNELLE`, `PRIMAIRE` | Ministère des Enseignements Maternel et Primaire (MEMP) |
+| `SECONDAIRE` (général, technique et professionnel) | Ministère des Enseignements Secondaires, Technique et de la Formation Professionnelle (MESTFP) |
+
+Direction : `Direction Départementale des Enseignements … <du/de l’/de la/des> <Département> (DDEMP|DDESTFP-<DÉPARTEMENT>)`. Devise : `Fraternité - Justice - Travail`.
+
+### 5.1 Aperçu — `GET /etablissement/entete-par-defaut?ordreEnseignement=PRIMAIRE&departement=Couffo`
+
+Tout membre authentifié. N'enregistre rien : sert à pré-remplir les Paramètres avant « Enregistrer ».
+
+```json
+{
+  "ministereTutelle": "Ministère des Enseignements Maternel et Primaire (MEMP)",
+  "directionDepartementale": "Direction Départementale des Enseignements Maternel et Primaire du Couffo (DDEMP-COUFFO)",
+  "devise": "Fraternité - Justice - Travail"
+}
+```
+
+`ministereTutelle` / `directionDepartementale` valent `null` si l'ordre ou le département n'est pas reconnu (rien n'est deviné). **400** si un paramètre manque ou est invalide.
+
+### 5.2 Quand l'API renseigne ces champs
+
+- **Inscription** : les trois champs sont pré-remplis à la création de l'établissement.
+- **`PATCH /etablissement`** : si `ordreEnseignement` ou `departement` change, les champs restés automatiques (vides, ou égaux à l'ancienne valeur par défaut) suivent. Une valeur personnalisée, ou envoyée dans la même requête, n'est **jamais** écrasée.
+
+---
+
 ## Notes pour l'intégration
 
 - Le "Numéro d'agrément", "Téléphone", "E-mail", etc. n'ont pas d'astérisque sur la maquette : ils sont optionnels côté back, à vous d'imposer ou non un rappel front pour compléter le profil.

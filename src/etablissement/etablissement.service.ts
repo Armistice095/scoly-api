@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { extensionDepuisMime } from '../storage/image-upload.options.js';
 import type { MettreAJourEtablissementDto } from './dto/mettre-a-jour-etablissement.dto.js';
+import { enteteParDefaut, recalerEntete } from './entete-officielle.js';
 
 export type TypeImageEtablissement = 'logo' | 'signature' | 'cachet';
 
@@ -41,7 +42,20 @@ export class EtablissementService {
     return this.versReponse(etablissement);
   }
 
-  async mettreAJour(etablissementId: string, dto: MettreAJourEtablissementDto) {
+  /** Valeurs d'en-tête calculées par les règles officielles (aperçu pour le front, sans écriture). */
+  enteteParDefaut(
+    ordreEnseignement: Parameters<typeof enteteParDefaut>[0],
+    departement: string,
+  ) {
+    return enteteParDefaut(ordreEnseignement, departement);
+  }
+
+  async mettreAJour(
+    etablissementId: string,
+    dtoRecu: MettreAJourEtablissementDto,
+  ) {
+    const dto = await this.avecEnteteRecale(etablissementId, dtoRecu);
+
     // Le numéro (ou le format qui le met en forme) change : on vérifie qu'aucune
     // référence déjà attribuée ne peut être redonnée. Sinon, mise à jour simple.
     const toucheLaNumerotation =
@@ -56,6 +70,31 @@ export class EtablissementService {
         });
 
     return this.versReponse(etablissement);
+  }
+
+  /**
+   * Si l'ordre ou le département change, les champs d'en-tête restés
+   * automatiques suivent ; ceux que le Directeur a personnalisés (ou envoyés
+   * dans la même requête) ne sont jamais écrasés — cf. `recalerEntete`.
+   */
+  private async avecEnteteRecale(
+    etablissementId: string,
+    dto: MettreAJourEtablissementDto,
+  ): Promise<MettreAJourEtablissementDto> {
+    if (dto.ordreEnseignement === undefined && dto.departement === undefined) {
+      return dto;
+    }
+    const actuel = await this.prisma.etablissement.findUniqueOrThrow({
+      where: { id: etablissementId },
+      select: {
+        ordreEnseignement: true,
+        departement: true,
+        ministereTutelle: true,
+        directionDepartementale: true,
+        devise: true,
+      },
+    });
+    return { ...dto, ...recalerEntete(actuel, dto) };
   }
 
   /**

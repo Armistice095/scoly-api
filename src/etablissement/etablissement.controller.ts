@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -19,6 +20,7 @@ import type { JwtPayloadAcces } from '../auth/interfaces/jwt-payload.interface.j
 import { optionsUploadImage } from '../storage/image-upload.options.js';
 import { EtablissementService } from './etablissement.service.js';
 import { MettreAJourEtablissementDto } from './dto/mettre-a-jour-etablissement.dto.js';
+import { EnteteParDefautQueryDto } from './dto/entete-par-defaut-query.dto.js';
 
 @Controller('etablissement')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,6 +31,20 @@ export class EtablissementController {
   @Get()
   recuperer(@UtilisateurCourant() utilisateur: JwtPayloadAcces) {
     return this.etablissementService.recuperer(utilisateur.etablissementId);
+  }
+
+  /**
+   * En-tête officiel (ministère, direction départementale, devise) calculé pour
+   * un ordre d'enseignement et un département, SANS rien enregistrer : sert à
+   * pré-remplir/prévisualiser les Paramètres avant « Enregistrer ».
+   * Déclaré avant toute route à paramètre.
+   */
+  @Get('entete-par-defaut')
+  enteteParDefaut(@Query() query: EnteteParDefautQueryDto) {
+    return this.etablissementService.enteteParDefaut(
+      query.ordreEnseignement,
+      query.departement,
+    );
   }
 
   /** Réservé au Directeur : ce sont les paramètres qui apparaissent sur tous les documents émis. */
